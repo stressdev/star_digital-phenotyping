@@ -263,5 +263,6 @@ class GPSDecryptor:
             end_date (datetime, optional): End date for processing. Defaults to far future.
         '''
         with self.decrypt(start_date=start_date, end_date=end_date) as decrypt_dir:
+            self.logger.info(f"Processing data for {start_date} to {end_date}")
             self.summarize_gps(decrypt_dir, ses=ses, start_date=start_date, end_date=end_date)
             

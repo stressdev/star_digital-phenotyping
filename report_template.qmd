@@ -1,0 +1,20 @@
+---
+title: "Trajectory Analysis"
+jupyter: "star_diph"
+format:
+    html:
+        code-fold: true
+        code-summary: "Show the code"
+        toc: true
+        embed-resources: true
+---
+
+# Participant ID: **$sub**
+
+```{python}
+import reportfunctions as rf
+
+sub = "$sub"
+
+```
+
