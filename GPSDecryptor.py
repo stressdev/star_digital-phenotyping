@@ -9,7 +9,9 @@ import logging
 from datetime import datetime
 from glob import glob
 from forest.jasmine.traj2stats import Frequency, gps_stats_main
+from forest.oak.base import run
 import pandas as pd
+import pickle
 from contextlib import contextmanager
 
 # Compatibility between Python 2 and 3 for the 'input' function
@@ -48,14 +50,30 @@ class GPSDecryptor:
             logger (logging.Logger, optional): Custom logger instance.
         """
         self.pid = pid
-        self.logger = logger or logging.getLogger(__name__)
-        self.logger = PrefixAdapter(logger, {'prefix': f"PID {self.pid}"})
         self.cred_file = cred_file
         self.input_dir = input_dir
+        self.logger = logger or logging.getLogger(__name__)
+        if not self.logger.handlers:
+            # create console handler and set level to debug
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.DEBUG)
+            # create formatter
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            # add formatter to ch
+            ch.setFormatter(formatter)
+            # add ch to logger
+            self.logger.addHandler(ch)
+        self.logger = PrefixAdapter(self.logger, {'prefix': f"PID {self.pid}"})
+        gps_base_dir = os.path.join(input_dir, 'PROTECTED', 'STAR', str(self.pid))
+        phone_base_dir = os.path.join(input_dir, 'GENERAL', 'STAR', str(self.pid))
         with open(cred_file, 'r') as f:
             self.passphrase = f.readline().strip()
         gps_dir_re = re.compile(r".*/gps$")
-        self.gps_dir = [x[0] for x in os.walk(self.input_dir) if bool(gps_dir_re.match(x[0]))][0]
+        accel_dir_re = re.compile(r".*/accelerometer$")
+        self.logger.info(f"Looking for GPS data in {gps_base_dir}")
+        self.gps_dir = [x[0] for x in os.walk(gps_base_dir) if bool(gps_dir_re.match(x[0]))][0]
+        self.logger.info(f"Looking for accelerometer data in {phone_base_dir}")
+        self.accel_dir = [x[0] for x in os.walk(phone_base_dir) if bool(accel_dir_re.match(x[0]))][0]
         self.gps_summary = None
         self.all_memory_dict = None
         self.all_bv_set = None
@@ -65,15 +83,17 @@ class GPSDecryptor:
         """
         Return a string representation of the GPSDecryptor object.
         """
-        return (
-            f"GPSDecryptor Object:\n"
-            f"====================\n"
-            f"Process ID (PID): {self.pid}\n"
-            f"Credential File Path: {self.cred_file}\n"
-            f"Directory for Input Data: {self.input_dir}\n"
-            f"Directory for GPS Data: {self.gps_dir}\n"
-            f"Output Directory: {self.pid_dir}"
-        )
+        return f"""
+GPSDecryptor object:
+    pid: {self.pid}
+    cred_file: {self.cred_file}
+    input_dir: {self.input_dir}
+    gps_dir: {self.gps_dir}
+    accel_dir: {self.accel_dir}
+    gps_summary: {self.gps_summary}
+    all_memory_dict: {self.all_memory_dict}
+    all_bv_set: {self.all_bv_set}
+    pid_dir: {self.pid_dir}"""
 
     def get(self, f):
         '''
@@ -178,7 +198,24 @@ class GPSDecryptor:
             yield tmpdirname
         finally:
             shutil.rmtree(tmpdirname)
-        
+
+    def format_ses(self, s):
+        # Extract numeric and optional letter parts
+        numeric_part = ''.join([ch for ch in s if ch.isdigit()])
+        letter_part = ''.join([ch for ch in s if ch.isalpha()])
+        # Format numeric part with two digits
+        formatted_numeric = f"{int(numeric_part):02d}"
+        return f"{formatted_numeric}{letter_part}"
+    
+    def format_pid(self, pid):
+        if isinstance(pid, int):
+            pid_str = f"{pid:04}"
+        elif isinstance(pid, str) and pid.isdigit():
+            pid_str = f"{int(pid):04}"
+        else:
+            pid_str = pid
+        return(pid_str)
+
     def summarize_gps(self, tmpdirname, ses:str, start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
         '''
         Generate a summary for GPS data from decrypted files.
@@ -189,41 +226,18 @@ class GPSDecryptor:
             start_date (datetime, optional): Start date for summarizing. Defaults to far past.
             end_date (datetime, optional): End date for summarizing. Defaults to far future.
         '''
-        def format_ses(s):
-            # Extract numeric and optional letter parts
-            numeric_part = ''.join([ch for ch in s if ch.isdigit()])
-            letter_part = ''.join([ch for ch in s if ch.isalpha()])
 
-            # Format numeric part with two digits
-            formatted_numeric = f"{int(numeric_part):02d}"
-
-            return f"{formatted_numeric}{letter_part}"
-        def format_pid(pid):
-            if isinstance(pid, int):
-                pid_str = f"{pid:04}"
-            elif isinstance(pid, str) and pid.isdigit():
-                pid_str = f"{int(pid):04}"
-            else:
-                pid_str = pid
-            return(pid_str)
-
-        formatted_ses = format_ses(ses)
+        formatted_ses = self.format_ses(ses)
         formatted_pid = self.pid
         self.logger.info('Generating GPS stats...')
         output_dir = os.path.join(self.pid_dir, f'ses-{start_date:%y%m%d}STAR{formatted_pid}{formatted_ses}')
         self.logger.info(f'Summarizing into {output_dir}')
 
-        all_memory_dict_fn = os.path.join(output_dir, 'all_memory_dict.pkl')
-        all_bv_set_fn = os.path.join(output_dir, 'all_bv_set.pkl')
+        # all_memory_dict_fn = os.path.join(output_dir, 'all_memory_dict.pkl')
+        # all_bv_set_fn = os.path.join(output_dir, 'all_bv_set.pkl')
 
         all_memory_dict = None
         all_bv_set = None
-        if os.path.isfile(all_memory_dict_fn):
-            all_memory_dict = pd.read_pickle(all_memory_dict_fn)
-            self.logger.info('Found and loaded previous memory pkl')
-        if os.path.isfile(all_bv_set_fn):
-            all_bv_set = pd.read_pickle(all_bv_set_fn)
-            self.logger.info('Found and loaded previous bv pkl')
 
         tz_str = "America/New_York"
         self.logger.info(f"Using time zone: {tz_str}")
@@ -253,6 +267,7 @@ class GPSDecryptor:
                        all_bv_set=all_bv_set
                       )
         self.logger.info('GPS stats generation completed.')
+
     def process_gps(self, ses=0, start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
         '''
         Process GPS data by decrypting and summarizing it.
@@ -265,4 +280,25 @@ class GPSDecryptor:
         with self.decrypt(start_date=start_date, end_date=end_date) as decrypt_dir:
             self.logger.info(f"Processing data for {start_date} to {end_date}")
             self.summarize_gps(decrypt_dir, ses=ses, start_date=start_date, end_date=end_date)
-            
+    
+    def process_accel(self, ses="0", start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
+        '''
+        Process call and text data by summarizing it.
+
+        Args:
+            ses (int or str, optional): Session identifier. Defaults to 0.
+            start_date (datetime, optional): Start date for processing. Defaults to far past.
+            end_date (datetime, optional): End date for processing. Defaults to far future.
+        '''
+        self.logger.info(f"Processing call and text data for {start_date} to {end_date}")
+        formatted_ses = self.format_ses(ses)
+        formatted_pid = self.pid
+        output_dir = os.path.join(self.pid_dir, f'ses-{start_date:%y%m%d}STAR{formatted_pid}{formatted_ses}')
+        self.logger.info(f'Summarizing into {output_dir}')
+
+        tz_str = "America/New_York"
+        self.logger.info(f"Using time zone: {tz_str}")
+        # Generate summary metrics e.g. Frequency.HOURLY, Frequency.DAILY or Frequency.HOURLY_AND_DAILY (see Frequency class in traj2stats.py)
+        frequency = Frequency.DAILY
+        
+        run(self.accel_dir, output_dir, tz_str, frequency, start_date, end_date)

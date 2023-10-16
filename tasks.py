@@ -182,6 +182,25 @@ def summarize_gps_for_pid(pid: int=None, out_dir=None, logger=None):
     df_agg.to_csv(outfile)
                 
 
+def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
+    logger.info(f"Processing call and text data for {pid}")
+    try:
+        sessions = get_session_dates(pid, ses_file, logger=logger)
+    except Exception as e:
+        logger.exception(f"Can't get session dates: {e}")
+    
+    logger.debug(f"Sessions shape for {pid}: {sessions.shape}")
+    logger.debug(f"Sessions for {pid}: {sessions}")
+    
+    gps_decryptor = GPSDecryptor(pid, cred_file, input_dir, out_dir, logger=logger)
+    
+    # Decrypting GPS data for each session
+    for ses in sessions[['start', 'end', 'ndays', 'sub_session']].itertuples():
+        try:
+            gps_decryptor.process_gps(ses = ses.sub_session, start_date = ses.start, end_date = ses.end)
+        except Exception as e:
+            logger.exception(f"Couldn't process calls and texts for {pid} between {ses.start:%Y-%m-%d} to {ses.end:%Y-%m-%d}: {e}")
+
 def report_for_pid(c, pid: int=None, outdir=None, logger=None):
     """
     Generate a report for a specific participant based on their GPS and session data.
@@ -299,6 +318,7 @@ def build_pid(c, pid: int, ses_file: str, cred_file=None, input_dir=None, out_di
         logger.error("PID is not given")
         raise ValueError("`pid` is None")
     logger.info(f"Building {pid}...")
+
     try:
         gps_for_pid(pid=pid, ses_file=ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=out_dir, logger=logger)
     except Exception as e:
@@ -308,7 +328,17 @@ def build_pid(c, pid: int, ses_file: str, cred_file=None, input_dir=None, out_di
         summarize_gps_for_pid(pid=pid, out_dir=out_dir, logger=logger)
     except Exception as e:
         logger.error(f"Error summarizing GPS for {pid}.")
-        
+    
+    try:
+        phone_for_pid(pid=pid, ses_file=ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=out_dir, logger=logger)
+    except Exception as e:
+        logger.error(f"Error processing gps for {pid}.")
+    
+    try:
+        summarize_phone_for_pid(pid=pid, out_dir=out_dir, logger=logger)
+    except Exception as e:
+        logger.error(f"Error summarizing GPS for {pid}.")
+
     try:
         report_for_pid(c, pid=pid, outdir=None, logger=logger)
     except Exception as e:
@@ -448,7 +478,7 @@ def build(c, pid: int=None, allpid: bool=False, test: bool=False, cred_file: str
     if allpid:
         sbatch_invoke_allpid(c, invoke_task="build", logger=logger, test=test)
     else:
-        input_dir = os.path.join(c.gps_dir, f"{pid}")
+        input_dir = os.path.join(c.input_dir)
         build_pid(c, pid, ses_file=c.ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=c.out_dir, logger=logger)
         logger.info(f"Done with {pid}")
 
