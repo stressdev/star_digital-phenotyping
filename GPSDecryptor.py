@@ -1,3 +1,5 @@
+from forest.jasmine.traj2stats import Frequency, gps_stats_main
+from forest.oak.base import run
 import os
 import shutil
 import multiprocessing
@@ -8,11 +10,10 @@ import re
 import logging
 from datetime import datetime
 from glob import glob
-from forest.jasmine.traj2stats import Frequency, gps_stats_main
-from forest.oak.base import run
 import pandas as pd
 import pickle
 from contextlib import contextmanager
+from distutils.dir_util import copy_tree
 
 # Compatibility between Python 2 and 3 for the 'input' function
 try:
@@ -65,15 +66,17 @@ class GPSDecryptor:
             self.logger.addHandler(ch)
         self.logger = PrefixAdapter(self.logger, {'prefix': f"PID {self.pid}"})
         gps_base_dir = os.path.join(input_dir, 'PROTECTED', 'STAR', str(self.pid))
-        phone_base_dir = os.path.join(input_dir, 'GENERAL', 'STAR', str(self.pid))
+        self.phone_base_dir = os.path.join(input_dir, 'GENERAL', 'STAR', str(self.pid), 'phone', 'raw')
         with open(cred_file, 'r') as f:
             self.passphrase = f.readline().strip()
         gps_dir_re = re.compile(r".*/gps$")
         accel_dir_re = re.compile(r".*/accelerometer$")
-        self.logger.info(f"Looking for GPS data in {gps_base_dir}")
+        self.logger.info(f"Looking for GPS dir in {gps_base_dir}")
         self.gps_dir = [x[0] for x in os.walk(gps_base_dir) if bool(gps_dir_re.match(x[0]))][0]
-        self.logger.info(f"Looking for accelerometer data in {phone_base_dir}")
-        self.accel_dir = [x[0] for x in os.walk(phone_base_dir) if bool(accel_dir_re.match(x[0]))][0]
+        self.logger.info(f"Looking for bewie id in {self.phone_base_dir}")
+        self.bewie_id = os.listdir(self.phone_base_dir)[0]
+        self.accel_dir = os.path.join(self.phone_base_dir, self.bewie_id, 'accelerometer')
+        self.logger.info(f"bewie id: {self.bewie_id}")
         self.gps_summary = None
         self.all_memory_dict = None
         self.all_bv_set = None
@@ -86,14 +89,7 @@ class GPSDecryptor:
         return f"""
 GPSDecryptor object:
     pid: {self.pid}
-    cred_file: {self.cred_file}
-    input_dir: {self.input_dir}
-    gps_dir: {self.gps_dir}
-    accel_dir: {self.accel_dir}
-    gps_summary: {self.gps_summary}
-    all_memory_dict: {self.all_memory_dict}
-    all_bv_set: {self.all_bv_set}
-    pid_dir: {self.pid_dir}"""
+    """
 
     def get(self, f):
         '''
@@ -135,7 +131,7 @@ GPSDecryptor object:
             raise URIError('unexpected scheme: {}'.format(uri.scheme))
         return content
 
-    def decrypt_file(self, file_path, tmpdirname):
+    def decrypt_file(self, file_path, output_dir):
         '''
         Decrypt a single encrypted file.
 
@@ -144,60 +140,70 @@ GPSDecryptor object:
             tmpdirname (str): Temporary directory path where decrypted files are stored.
         '''
         
-        pattern_dir = re.compile(r".*(\d{4})/.*")
         output_fn = os.path.basename(file_path).replace('.csv.lock', '.csv')
-        output_dir = os.path.join(tmpdirname, pattern_dir.search(os.path.dirname(file_path)).group(1), 'gps')
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, output_fn)
         raw = self.get(file_path)
         key = crypt.key_from_file(raw, self.passphrase)
         crypt.decrypt(raw, key, filename=output_file)
-    
-    @contextmanager
-    def decrypt(self, start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
-        '''
-        Context manager for decrypting all files in a given date range.
-
-        Args:
-            start_date (datetime, optional): Start date for decryption range. Defaults to far past.
-            end_date (datetime, optional): End date for decryption range. Defaults to far future.
-        
-        Yields:
-            str: Temporary directory where decrypted files are stored.
-        '''
-        tmpdirname = tempfile.mkdtemp()
-        try:
-            self.logger.info(f"Created temporary directory {tmpdirname}")            
-            self.logger.info(f"Decrypting...")
+        return(output_file)
             
-            gps_files = os.listdir(self.gps_dir)
+    def get_file_list_for_dates(self, 
+                                file_dir, 
+                                start_date=datetime(1900, 1, 1, 0, 0, 0), 
+                                end_date=datetime(9900, 1, 1, 0, 0, 0), 
+                                file_suffix = r'\.csv\.lock'):
+        self.logger.info(f"Collecting filenames...")
+        try:
+            files = os.listdir(file_dir)
             if start_date or end_date:
                 #need to be datetime objects for now
-                gps_files_to_decrypt = []
-                gps_file_date_re = re.compile(r"^(\d{4}-\d{1,2}-\d{1,2} \d{1,2}_\d{1,2}_\d{1,2}).*\.csv\.lock$")
-                for gps_file in gps_files:
-                    gps_file_date = gps_file_date_re.match(gps_file)[1]
-                    filetime = datetime.strptime(gps_file_date, "%Y-%m-%d %H_%M_%S")
+                files_to_return = []
+                file_date_re = re.compile(rf"^(\d{{4}}-\d{{1,2}}-\d{{1,2}} \d{{1,2}}_\d{{1,2}}_\d{{1,2}}).*{file_suffix}$")
+                for file in files:
+                    file_date = file_date_re.match(file)[1]
+                    filetime = datetime.strptime(file_date, "%Y-%m-%d %H_%M_%S")
                     if filetime > start_date and filetime < end_date:
-                        gps_files_to_decrypt.append(gps_file)
+                        files_to_return.append(file)
             else:
-                gps_files_to_decrypt = gps_files
+                files_to_return = files
             
-            file_paths = [os.path.join(self.gps_dir, f) for f in gps_files_to_decrypt]
+            file_paths = [os.path.join(file_dir, f) for f in files_to_return]
+        except Exception as e:
+            raise(e)
+        return(file_paths)
+    
+    def decrypt(self, file_paths, output_dir, cp_dir=None):
+        # Determine the number of processes based on SLURM_CPUS_PER_TASK or available CPU cores
+        self.logger.info(f"Starting to decrypt into {output_dir}")
+        cpus_per_task = int(os.environ.get('SLURM_CPUS_PER_TASK', multiprocessing.cpu_count()))
+        self.logger.info(f"Files to decrypt: {len(file_paths)} - CPUs: {cpus_per_task}")
+        num_processes = min(cpus_per_task, len(file_paths))
+        with multiprocessing.Pool(processes=num_processes) as pool:
+            output_files = pool.starmap(self.decrypt_file, zip(file_paths, [output_dir] * len(file_paths)))
+
+        if cp_dir is not None:
+            copy_tree(output_dir, cp_dir)
+        self.logger.info('Decrypting done.')
+        return(output_files)
+    
+    def copy_files(self, file_paths, output_dir):
+        try:
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+        except Exception as e:
+            self.logger.error(f'Could not make dir: {e}')
             
-            # Determine the number of processes based on SLURM_CPUS_PER_TASK or available CPU cores
-            cpus_per_task = int(os.environ.get('SLURM_CPUS_PER_TASK', multiprocessing.cpu_count()))
-            self.logger.info(f"Files to decrypt: {len(file_paths)} - CPUs: {cpus_per_task}")
-            num_processes = min(cpus_per_task, len(file_paths))
-
-            with multiprocessing.Pool(processes=num_processes) as pool:
-                pool.starmap(self.decrypt_file, zip(file_paths, [tmpdirname] * len(file_paths)))
-
-            self.logger.info('Decrypting done.')
-            yield tmpdirname
-        finally:
-            shutil.rmtree(tmpdirname)
+        for file in file_paths:
+            try:
+                if os.path.isfile(file):
+                    shutil.copy(file, output_dir)
+                else:
+                    self.logger.info(f"Skipping non-existent or non-file path: {file}")
+            except Exception as e:
+                self.logger.error(f'Could not copy files: {e}')
+                raise
 
     def format_ses(self, s):
         # Extract numeric and optional letter parts
@@ -245,28 +251,23 @@ GPSDecryptor object:
         frequency = Frequency.DAILY
         # Save imputed trajectories?
         save_traj = True
-        # Hyperparameters class for imputation (default leave None), from forest.jasmine.traj2stats import Hyperparameters
-        parameters = None
         # list of locations to track if visited, leave None if don't want these summary statistics
         places_of_interest = None
-        # True if want to save a log of all locations and attributes of those locations visited
-        save_osm_log = False
-        # threshold of time spent in a location to count as being in that location, in minutes
-        threshold = 0
-        # 3. Impute location data and generate mobility summary metrics using the simulated data above
-        gps_stats_main(tmpdirname, 
-                       output_dir, 
-                       tz_str, 
-                       frequency, 
-                       save_traj, 
-                       parameters, 
-                       places_of_interest, 
-                       save_osm_log, 
-                       threshold,
+        self.logger.info(f"Study dir is: {tmpdirname}")
+        gps_stats_main(study_folder=tmpdirname, 
+                       output_folder=output_dir, 
+                       tz_str=tz_str, 
+                       frequency=frequency, 
+                       save_traj=save_traj, 
+                       places_of_interest=places_of_interest, 
+                       participant_ids = [f"{self.pid}"],
                        all_memory_dict=all_memory_dict,
-                       all_bv_set=all_bv_set
-                      )
+                       all_bv_set=all_bv_set)
         self.logger.info('GPS stats generation completed.')
+        self.logger.info(f"Output dir: {output_dir}")
+        self.logger.info("Files: ")
+        for file in os.listdir(output_dir):
+            self.logger.info(f"  {file}")
 
     def process_gps(self, ses=0, start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
         '''
@@ -277,28 +278,40 @@ GPSDecryptor object:
             start_date (datetime, optional): Start date for processing. Defaults to far past.
             end_date (datetime, optional): End date for processing. Defaults to far future.
         '''
-        with self.decrypt(start_date=start_date, end_date=end_date) as decrypt_dir:
+        with tempfile.TemporaryDirectory() as tempdir:
+            self.logger.info("Collecting file paths...")
+            file_paths = self.get_file_list_for_dates(file_dir=self.gps_dir, start_date=start_date, end_date=end_date)
+            output_dir = os.path.join(tempdir, f"{self.pid}", 'gps')
+            output_files = self.decrypt(file_paths, output_dir)
             self.logger.info(f"Processing data for {start_date} to {end_date}")
-            self.summarize_gps(decrypt_dir, ses=ses, start_date=start_date, end_date=end_date)
+            self.summarize_gps(tempdir, ses=ses, start_date=start_date, end_date=end_date)
     
-    def process_accel(self, ses="0", start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
-        '''
-        Process call and text data by summarizing it.
-
-        Args:
-            ses (int or str, optional): Session identifier. Defaults to 0.
-            start_date (datetime, optional): Start date for processing. Defaults to far past.
-            end_date (datetime, optional): End date for processing. Defaults to far future.
-        '''
-        self.logger.info(f"Processing call and text data for {start_date} to {end_date}")
+    def summarize_accel(self, tmpdirname, ses:str, start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
+        self.logger.info(f"Processing accelerometer data for {start_date} to {end_date}")
         formatted_ses = self.format_ses(ses)
         formatted_pid = self.pid
         output_dir = os.path.join(self.pid_dir, f'ses-{start_date:%y%m%d}STAR{formatted_pid}{formatted_ses}')
         self.logger.info(f'Summarizing into {output_dir}')
 
+        start_date_str = start_date.strftime("%Y-%m-%d %H_%M_%S")
+        end_date_str = end_date.strftime("%Y-%m-%d %H_%M_%S")
         tz_str = "America/New_York"
         self.logger.info(f"Using time zone: {tz_str}")
-        # Generate summary metrics e.g. Frequency.HOURLY, Frequency.DAILY or Frequency.HOURLY_AND_DAILY (see Frequency class in traj2stats.py)
         frequency = Frequency.DAILY
         
-        run(self.accel_dir, output_dir, tz_str, frequency, start_date, end_date)
+        run(tmpdirname, output_dir, tz_str, frequency, start_date_str, end_date_str)
+        
+    def process_accel(self, ses="0", start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
+        with tempfile.TemporaryDirectory() as tempdir:
+            self.logger.info("Collecting file paths...")
+            file_paths = self.get_file_list_for_dates(file_dir=self.accel_dir, 
+                                                      start_date=start_date, 
+                                                      end_date=end_date, 
+                                                      file_suffix=r'\.csv')
+            output_dir = os.path.join(tempdir, f"{self.pid}", 'accelerometer')
+            self.logger.info(f"Copying {len(file_paths)} files to {output_dir}")
+            output_files = self.copy_files(file_paths, output_dir)
+            self.logger.info(f"Processing data for {start_date} to {end_date}")
+            self.summarize_accel(tempdir, ses=ses, start_date=start_date, end_date=end_date)
+            
+        

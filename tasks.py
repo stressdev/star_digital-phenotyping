@@ -183,7 +183,10 @@ def summarize_gps_for_pid(pid: int=None, out_dir=None, logger=None):
                 
 
 def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
-    logger.info(f"Processing call and text data for {pid}")
+    pass
+
+def accel_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
+    logger.info(f"Processing accelerometer data for {pid}")
     try:
         sessions = get_session_dates(pid, ses_file, logger=logger)
     except Exception as e:
@@ -197,10 +200,10 @@ def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_d
     # Decrypting GPS data for each session
     for ses in sessions[['start', 'end', 'ndays', 'sub_session']].itertuples():
         try:
-            gps_decryptor.process_gps(ses = ses.sub_session, start_date = ses.start, end_date = ses.end)
+            gps_decryptor.process_accel(ses = ses.sub_session, start_date = ses.start, end_date = ses.end)
         except Exception as e:
             logger.exception(f"Couldn't process calls and texts for {pid} between {ses.start:%Y-%m-%d} to {ses.end:%Y-%m-%d}: {e}")
-
+            
 def report_for_pid(c, pid: int=None, outdir=None, logger=None):
     """
     Generate a report for a specific participant based on their GPS and session data.
@@ -410,12 +413,37 @@ def gps(c, pid: int=None, allpid: bool=False, cred_file: str = '.credentials'):
     if allpid:
         sbatch_invoke_allpid(c, "gps", logger)
     else:
-        input_dir = os.path.join(c.gps_dir, f"{pid}")    
+        input_dir = os.path.join(c.input_dir)    
         try:
             gps_for_pid(pid, ses_file=c.ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=c.out_dir, logger=logger)
         except Exception as e:
             logger.error(f"Problem computing gps trajectories: {e}")
 
+@task
+def accel(c, pid: int=None, allpid: bool=False, cred_file: str = '.credentials'):
+    """
+    Accelerometer data processing.
+    Processes either a single PID's accelerometer data or all PIDs based on the provided options.
+    
+    Args:
+        c: Invoke context.
+        pid (int, optional): Participant ID to process. Defaults to None.
+        allpid (bool, optional): Whether to process all PIDs. Defaults to False.
+        cred_file (str, optional): Path to credentials file. Defaults to '.credentials'.
+        noreport (bool, optional): Do not make a report. Defaults to False.
+    """
+    logger = setup_logging(log_file = c.log_file, log_level = c.log_level)
+    if not pid and not allpid:
+        raise ValueError("Must either provide a PID or specify `--allpid`")
+    if allpid:
+        sbatch_invoke_allpid(c, "accel", logger)
+    else:
+        input_dir = os.path.join(c.input_dir)    
+        try:
+            accel_for_pid(pid, ses_file=c.ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=c.out_dir, logger=logger)
+        except Exception as e:
+            logger.error(f"Problem computing gps trajectories: {e}")
+            
 @task
 def summarize_gps(c, pid: int=None, allpid: bool=False, cred_file: str = '.credentials'):
     """
@@ -490,7 +518,7 @@ dir_of_this_script = os.path.dirname(os.path.abspath(__file__))
 os.chdir(dir_of_this_script)
 
 # Task collections make it possible to group multiple related operations, simplifying the orchestration.
-ns = Collection(gps, make_report, summarize_gps, build)
+ns = Collection(gps, make_report, summarize_gps, build, accel)
 
 # Default configurations are set to ensure smooth operations even if specific settings aren't provided.
 ns.configure({'log_level': "INFO", 
