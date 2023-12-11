@@ -1,10 +1,3 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.ticker import FormatStrFormatter
-import numpy as np
-from mpl_toolkits.basemap import Basemap
-import re
-
 def get_traj(sub, ses):
     shortsub = re.match('sub-(\d{4})', sub)[1]
     traj_path = f'/ncf/mclaughlin_lab_tier1/STAR/8_digital/{sub}/{ses}/trajectory/{shortsub}.csv'
@@ -12,9 +5,19 @@ def get_traj(sub, ses):
         traj = pd.read_csv(traj_path)
         traj = traj[(traj['y0'] > -360) & (traj['y0'] < 720)]
     except:
-        print('Problem loading trajectory file')
+        print(f'Problem loading trajectory file from path {traj_path}')
         traj = None
     return(traj)
+
+def get_accel(sub, ses):
+    shortsub = re.match('sub-(\d{4})', sub)[1]
+    accel_path = f'/ncf/mclaughlin_lab_tier1/STAR/8_digital/{sub}/{ses}/daily/{shortsub}_gait_daily.csv'
+    try:
+        accel = pd.read_csv(accel_path)
+    except:
+        print(f'Problem loading accelerometer file from {accel_path}')
+        accel = None
+    return(accel)
     
 def plot_hist(traj):
     # Set up a 1x2 grid of subplots
@@ -70,3 +73,20 @@ def plot_map(traj):
     ax.set_title('GPS Trajectory')
     # Plot the trajectory
     ax.plot(x, y, marker='.', color='black', linestyle='-', markersize = 1, linewidth=.5, alpha = .35)
+
+def plot_accel_hists(df, skip_cols=None, bins=30):
+    plot_cols = [col for col in df.columns if col not in skip_cols]
+    num_columns = len(plot_cols)
+    fig, axes = plt.subplots(num_columns, 1, figsize=(10, 5 * num_columns))
+
+    if num_columns == 1:  # If there's only one column, axes is not a list
+        axes = [axes]
+
+    for i, col in enumerate(plot_cols):
+        df[col].hist(ax=axes[i], bins=bins)
+        axes[i].set_title(f'Histogram of {col}')
+        axes[i].set_xlabel(col)
+        axes[i].set_ylabel('Frequency')
+
+    plt.tight_layout()
+    plt.show()

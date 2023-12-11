@@ -174,19 +174,16 @@ GPSDecryptor object:
             raise(e)
         return(file_paths)
     
-    def decrypt(self, file_paths, output_dir, cp_dir=None):
+    def decrypt(self, file_paths, output_dir):
         # Determine the number of processes based on SLURM_CPUS_PER_TASK or available CPU cores
         self.logger.info(f"Starting to decrypt into {output_dir}")
-        cpus_per_task = int(os.environ.get('SLURM_CPUS_PER_TASK', multiprocessing.cpu_count()))
-        self.logger.info(f"Files to decrypt: {len(file_paths)} - CPUs: {cpus_per_task}")
-        num_processes = min(cpus_per_task, len(file_paths))
-        with multiprocessing.Pool(processes=num_processes) as pool:
-            output_files = pool.starmap(self.decrypt_file, zip(file_paths, [output_dir] * len(file_paths)))
+        self.logger.info(f"Files to decrypt: {len(file_paths)}")
+        
+        for file_path in file_paths:
+            self.decrypt_file(file_path, output_dir)
 
-        if cp_dir is not None:
-            copy_tree(output_dir, cp_dir)
         self.logger.info('Decrypting done.')
-        return(output_files)
+        return
     
     def copy_files(self, file_paths, output_dir):
         try:
@@ -282,7 +279,7 @@ GPSDecryptor object:
             self.logger.info("Collecting file paths...")
             file_paths = self.get_file_list_for_dates(file_dir=self.gps_dir, start_date=start_date, end_date=end_date)
             output_dir = os.path.join(tempdir, f"{self.pid}", 'gps')
-            output_files = self.decrypt(file_paths, output_dir)
+            self.decrypt(file_paths, output_dir)
             self.logger.info(f"Processing data for {start_date} to {end_date}")
             self.summarize_gps(tempdir, ses=ses, start_date=start_date, end_date=end_date)
     
@@ -310,7 +307,7 @@ GPSDecryptor object:
                                                       file_suffix=r'\.csv')
             output_dir = os.path.join(tempdir, f"{self.pid}", 'accelerometer')
             self.logger.info(f"Copying {len(file_paths)} files to {output_dir}")
-            output_files = self.copy_files(file_paths, output_dir)
+            self.copy_files(file_paths, output_dir)
             self.logger.info(f"Processing data for {start_date} to {end_date}")
             self.summarize_accel(tempdir, ses=ses, start_date=start_date, end_date=end_date)
             

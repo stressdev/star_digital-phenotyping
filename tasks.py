@@ -7,6 +7,7 @@ import pandas as pd
 from GPSDecryptor import GPSDecryptor
 from datetime import datetime
 from string import Template
+import multiprocessing
 
 # Set up logging
 logging.basicConfig(
@@ -84,6 +85,18 @@ def get_session_dates(pid: int, ses_file, logger=None):
     
     return( sessions_l[['pid', 'start', 'end', 'session', 'sub_session', 'ndays']].dropna(subset='ndays') )
 
+def process_session(pid, ses_sub_session, ses_start, ses_end, method_name, cred_file, input_dir, out_dir, logger):
+    logger.debug(f"Working on {method_name} for {pid} between {ses_start:%Y-%m-%d} to {ses_end:%Y-%m-%d}")
+    
+    try:
+        processor = GPSDecryptor(pid, cred_file, input_dir, out_dir, logger=logger)
+        # Dynamically get the method to call
+        process_method = getattr(processor, method_name)
+        # Call the method
+        process_method(ses=ses_sub_session, start_date=ses_start, end_date=ses_end)
+    except Exception as e:
+        logger.exception(f"Error {method_name} for {pid} between {ses_start:%Y-%m-%d} to {ses_end:%Y-%m-%d}: {e}")
+
 def gps_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
     """
     Process GPS data for a particular participant ID.
@@ -105,16 +118,45 @@ def gps_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir
     logger.debug(f"Sessions shape for {pid}: {sessions.shape}")
     logger.debug(f"Sessions for {pid}: {sessions}")
     
-    gps_decryptor = GPSDecryptor(pid, cred_file, input_dir, out_dir, logger=logger)
+    # Determine the number of CPUs allocated by Slurm or default to 1
+    num_cpus = int(os.getenv('SLURM_CPUS_PER_TASK', 1))
+    logger.info(f"Number of CPUs allocated: {num_cpus}")
     
-    # Decrypting GPS data for each session
-    for ses in sessions[['start', 'end', 'ndays', 'sub_session']].itertuples():
-        try:
-            gps_decryptor.process_gps(ses = ses.sub_session, start_date = ses.start, end_date = ses.end)
-        except Exception as e:
-            logger.exception(f"Couldn't decrypt {pid} between {ses.start:%Y-%m-%d} to {ses.end:%Y-%m-%d}: {e}")
+    method_name = 'process_gps'
+    session_args = [(pid, ses.sub_session, ses.start, ses.end, method_name, cred_file, input_dir, out_dir, logger) 
+                    for ses in sessions[['start', 'end', 'sub_session']].itertuples(index=False)]
 
-def summarize_gps_for_pid(pid: int=None, out_dir=None, logger=None):
+    # Use multiprocessing Pool for parallel processing
+    with multiprocessing.Pool(processes=num_cpus) as pool:
+        pool.starmap(process_session, session_args)
+
+                
+def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
+    pass
+
+def accel_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
+    logger.info(f"Processing accelerometer data for {pid}")
+    try:
+        sessions = get_session_dates(pid, ses_file, logger=logger)
+    except Exception as e:
+        logger.exception(f"Can't get session dates: {e}")
+    
+    logger.debug(f"Sessions shape for {pid}: {sessions.shape}")
+    logger.debug(f"Sessions for {pid}: {sessions}")
+    
+    # Determine the number of CPUs allocated by Slurm or default to 1
+    num_cpus = int(os.getenv('SLURM_CPUS_PER_TASK', 1))
+    logger.info(f"Number of CPUs allocated: {num_cpus}")
+    
+    method_name = 'process_accel'
+    session_args = [(pid, ses.sub_session, ses.start, ses.end, method_name, cred_file, input_dir, out_dir, logger) 
+                    for ses in sessions[['start', 'end', 'sub_session']].itertuples(index=False)]
+
+    # Use multiprocessing Pool for parallel processing
+    with multiprocessing.Pool(processes=num_cpus) as pool:
+        pool.starmap(process_session, session_args)
+            
+def summarize_for_pid(pid: int, dtype: str, csv_file: str=None, out_dir=None, logger=None):
     """
     Summarizes GPS data across days by session for a given participant ID (pid).
     Output is a csv file with averages per month.
@@ -139,7 +181,7 @@ def summarize_gps_for_pid(pid: int=None, out_dir=None, logger=None):
         return(x.iloc[0])
     
     idcols = ['ID', 'Session']
-    date_cols = ['year', 'month', 'day']
+    date_cols = ['year', 'month', 'day', 'date']
 
     pid_dir = os.path.join(out_dir, f"sub-{pid}")
     ses_dirs = [(os.path.join(pid_dir, d), d) for d in os.listdir(pid_dir) if re.match('ses-.*', d)]
@@ -147,7 +189,7 @@ def summarize_gps_for_pid(pid: int=None, out_dir=None, logger=None):
 
     for ses_dir, ses in ses_dirs:
         ses = re.match('ses-\d+STAR\d{4}(\d{2})[AB]*', ses)[1]
-        file = os.path.join(ses_dir, f"{pid}.csv")
+        file = os.path.join(ses_dir, csv_file)
         try:
             df = pd.read_csv(file)
             df['ID'] = pid
@@ -172,37 +214,14 @@ def summarize_gps_for_pid(pid: int=None, out_dir=None, logger=None):
     df_all.sort_values(idcols, inplace=True)
 
     agg_funcs = {col: ['mean', 'median', 'count'] for col in df.columns if col not in idcols and col not in date_cols}
-    agg_funcs.update({col: ses_first for col in date_cols})
+    agg_funcs.update({col: ses_first for col in date_cols if col in df.columns})
 
     df_agg = df_all.groupby(idcols).agg(agg_funcs)
     df_agg.columns = ['_'.join(col).strip() for col in df_agg.columns.values]
-    outfile = os.path.join(pid_dir, f"sub-{pid}_monthly.csv")
+    outfile = os.path.join(pid_dir, f"sub-{pid}_{dtype}_monthly.csv")
     
     logger.info(f"Writing aggregated data to {outfile}")
     df_agg.to_csv(outfile)
-                
-
-def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
-    pass
-
-def accel_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
-    logger.info(f"Processing accelerometer data for {pid}")
-    try:
-        sessions = get_session_dates(pid, ses_file, logger=logger)
-    except Exception as e:
-        logger.exception(f"Can't get session dates: {e}")
-    
-    logger.debug(f"Sessions shape for {pid}: {sessions.shape}")
-    logger.debug(f"Sessions for {pid}: {sessions}")
-    
-    gps_decryptor = GPSDecryptor(pid, cred_file, input_dir, out_dir, logger=logger)
-    
-    # Decrypting GPS data for each session
-    for ses in sessions[['start', 'end', 'ndays', 'sub_session']].itertuples():
-        try:
-            gps_decryptor.process_accel(ses = ses.sub_session, start_date = ses.start, end_date = ses.end)
-        except Exception as e:
-            logger.exception(f"Couldn't process calls and texts for {pid} between {ses.start:%Y-%m-%d} to {ses.end:%Y-%m-%d}: {e}")
             
 def report_for_pid(c, pid: int=None, outdir=None, logger=None):
     """
@@ -248,6 +267,14 @@ ses = "$ses"
 traj = rf.get_traj(sub, ses)
 if traj is not None:
     plot_map(traj)
+```
+
+### Accelerometer Histograms
+
+```{python}
+ses = "$ses"
+accel = get_accel(sub, ses)
+plot_accel_hists(accel, skip_cols=['date'], bins=5)
 ```
 
 :::
@@ -325,27 +352,27 @@ def build_pid(c, pid: int, ses_file: str, cred_file=None, input_dir=None, out_di
     try:
         gps_for_pid(pid=pid, ses_file=ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=out_dir, logger=logger)
     except Exception as e:
-        logger.error(f"Error processing gps for {pid}.")
+        logger.error(f"Error processing gps for {pid}: {e}")
     
     try:
-        summarize_gps_for_pid(pid=pid, out_dir=out_dir, logger=logger)
+        summarize_for_pid(pid=pid, dtype='gps', csv_file=f"{pid}.csv", out_dir=out_dir, logger=logger)
     except Exception as e:
-        logger.error(f"Error summarizing GPS for {pid}.")
+        logger.error(f"Error summarizing GPS for {pid}: {e}")
     
     try:
-        phone_for_pid(pid=pid, ses_file=ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=out_dir, logger=logger)
+        accel_for_pid(pid=pid, ses_file=ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=out_dir, logger=logger)
     except Exception as e:
-        logger.error(f"Error processing gps for {pid}.")
-    
-    try:
-        summarize_phone_for_pid(pid=pid, out_dir=out_dir, logger=logger)
-    except Exception as e:
-        logger.error(f"Error summarizing GPS for {pid}.")
+        logger.error(f"Error processing accelerometer for {pid}: {e}")
 
+    try:
+        summarize_for_pid(pid=pid, dtype='accel', csv_file=os.path.join('daily', f"{pid}_gait_daily.csv"), out_dir=out_dir, logger=logger)
+    except Exception as e:
+        logger.error(f"Error summarizing accelerometer for {pid}: {e}")
+                          
     try:
         report_for_pid(c, pid=pid, outdir=None, logger=logger)
     except Exception as e:
-        logger.error(f"Error generating report for {pid}.")
+        logger.error(f"Error generating report for {pid}: {e}")
     
 def sbatch_invoke_allpid(c, invoke_task, logger, test=False):
     """
@@ -365,10 +392,11 @@ def sbatch_invoke_allpid(c, invoke_task, logger, test=False):
         ValueError: if no PID directories are found in `c.gps_dir`.
     """
     try: 
-        dirs = os.listdir(c.gps_dir)
-        id_list = [d for d in dirs if re.match(r'1\d{3}', d) and os.path.isdir(os.path.join(c.gps_dir, d))]
+        sessions = pd.read_csv(c.ses_file)
+        id_list = [f"{d:0.0f}" for d in sessions.fevd.dropna()]
+        id_list = [d for d in id_list if re.match(r'1\d{3}', d) and os.path.isdir(os.path.join(c.gps_dir, str(d)))]
     except Exception as e:
-        logger.exception(f"Couldn't list gps data directories: {e}")
+        logger.exception(f"Couldn't confirm list of gps data directories: {e}")
     if not id_list:
         raise ValueError(f"Could not find any PID directories in {c.gps_dir}")
 
@@ -461,9 +489,29 @@ def summarize_gps(c, pid: int=None, allpid: bool=False, cred_file: str = '.crede
     if allpid:
         sbatch_invoke_allpid(c, "summarize-gps", logger)
     else:
-        summarize_gps_for_pid(pid=pid, outdir=c.out_dir, logger=logger)
+        summarize_for_pid(pid=pid, dtype='gps', csv_file=f"{pid}.csv", out_dir=c.out_dir, logger=logger)
         logger.info(f"Done with {pid}")
 
+@task
+def summarize_accel(c, pid: int=None, allpid: bool=False, cred_file: str = '.credentials'):
+    """
+    Summarizes accelerometer data for a given participant ID or for all participants if allpid is True.
+    
+    Args:
+        c (object): Invoke context object.
+        pid (int, optional): The participant ID for which to summarize GPS data. Defaults to None.
+        allpid (bool, optional): If True, summarizes GPS data for all participants. Defaults to False.
+        cred_file (str, optional): The path to the credentials file. Defaults to '.credentials'.
+    """
+    
+    logger = setup_logging(log_file = c.log_file, log_level = c.log_level)
+    
+    if allpid:
+        sbatch_invoke_allpid(c, "summarize-accel", logger)
+    else:
+        summarize_for_pid(pid=pid, dtype='accel', csv_file=os.path.join('daily', f"{pid}_gait_daily.csv"), out_dir=c.out_dir, logger=logger)
+        logger.info(f"Done with {pid}")
+        
 @task
 def make_report(c, pid: int=None, outdir: str=None, allpid: bool=False, test: bool=False):
     """
@@ -510,7 +558,19 @@ def build(c, pid: int=None, allpid: bool=False, test: bool=False, cred_file: str
         build_pid(c, pid, ses_file=c.ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=c.out_dir, logger=logger)
         logger.info(f"Done with {pid}")
 
+@task
+def clean(c, dry_run=False):
+    logger = setup_logging(log_file = c.log_file, log_level = c.log_level)
+    pattern = re.compile(r'sub-1\d{3}')
     
+    for entry in os.listdir(c.out_dir):
+        dir_path = os.path.join(c.out_dir, entry)
+        # Check if it's a directory and matches the regex
+        if os.path.isdir(dir_path) and pattern.match(entry):
+            logger.info(f"Deleting dir: {dir_path}")
+            if not dry_run:
+                shutil.rmtree(dir_path)
+                    
 #--------------------------------------    
 
 # Ensuring a consistent runtime environment, regardless of where the script is invoked from.
@@ -518,7 +578,7 @@ dir_of_this_script = os.path.dirname(os.path.abspath(__file__))
 os.chdir(dir_of_this_script)
 
 # Task collections make it possible to group multiple related operations, simplifying the orchestration.
-ns = Collection(gps, make_report, summarize_gps, build, accel)
+ns = Collection(gps, make_report, summarize_gps, summarize_accel, build, accel, clean)
 
 # Default configurations are set to ensure smooth operations even if specific settings aren't provided.
 ns.configure({'log_level': "INFO", 

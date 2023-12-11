@@ -1,12 +1,13 @@
 log_level: DEBUG
 log_file: invoke_STAR-DiPh.log
 input_dir: "/ncf/mclaughlin_lab_tier1/STAR/8_digital/raw_data/PHOENIX"
+gps_dir: "/ncf/mclaughlin_lab_tier1/STAR/8_digital/raw_data/PHOENIX/PROTECTED/STAR"
 out_dir: "/ncf/mclaughlin_lab_tier1/STAR/8_digital"
 ses_file: "STAR_Month-Day_Subject-Calculator.xlsx - Sheet1.csv"
 sbatch_header: |
     #!/bin/bash
-    #SBATCH -c 1
+    #SBATCH -c 12
     #SBATCH -p fasse
-    #SBATCH --mem=2G
-    #SBATCH -t 0-5
-    #SBATCH -J GPS
+    #SBATCH --mem=8G
+    #SBATCH -t 16:00
+    #SBATCH -J STAR
