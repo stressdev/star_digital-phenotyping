@@ -1,4 +1,5 @@
 .credentials
+*.csv
 crypt.ipynb
 forest_sandbox.ipynb
 invoke_STAR-DiPh.log
