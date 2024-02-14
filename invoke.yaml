@@ -9,5 +9,8 @@ sbatch_header: |
     #SBATCH -c 12
     #SBATCH -p fasse
     #SBATCH --mem=8G
-    #SBATCH -t 16:00
+    #SBATCH -t 0-4
     #SBATCH -J STAR
+    #SBATCH -o logs/%A %a.log
+phone_data_sox3_dir: "sdlab/SDLab/STUDIES/STAR_R01/DATA/PHONE\\ DATA"
+phone_data_fasse_dir: "/ncf/mclaughlin_lab_tier1/STAR/8_digital/raw_data/PHONE_DATA/"

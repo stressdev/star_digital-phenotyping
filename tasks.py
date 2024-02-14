@@ -8,6 +8,10 @@ from GPSDecryptor import GPSDecryptor
 from datetime import datetime
 from string import Template
 import multiprocessing
+import json
+
+class MyTemplate(Template):
+    delimiter = '@@'
 
 # Set up logging
 logging.basicConfig(
@@ -69,6 +73,7 @@ def get_session_dates(pid: int, ses_file, logger=None):
 
     # Filter out unnecessary columns and filter sessions by pid
     sessions = pd.read_csv(ses_file, usecols=not_is_notneeded, skiprows=[1])
+    logger.debug(sessions.columns)
     sessions = sessions[sessions.fevd == int(pid)]
     logger.debug(f"Raw sessions shape after filtering by fevd=={pid}: {sessions.shape}")
     
@@ -130,9 +135,95 @@ def gps_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir
     with multiprocessing.Pool(processes=num_cpus) as pool:
         pool.starmap(process_session, session_args)
 
-                
+def find_files(directory, regex_pattern):
+    # Compile the regex pattern
+    regex = re.compile(regex_pattern)
+
+    # List all files in the directory
+    for filename in os.listdir(directory):
+        # If the filename matches the regex pattern, yield it
+        if regex.match(filename):
+            yield filename
+
+def read_file(file, logger):
+    # Set the read method based on the file extension
+    if file.endswith('.csv'):
+        read_method = pd.read_csv
+    elif file.endswith('.xlsx'):
+        read_method = pd.read_excel
+    else:
+        return None
+
+    # Check if the first row produces unnamed columns
+    df = read_method(file, nrows=0)  # Read only the header row
+    logger.debug(f'df: {df.shape}')
+    unnamed_cols = df.columns.str.contains('^Unnamed')
+    if unnamed_cols.any() or not df.shape[1] > 1:
+        logger.info(f"File {file} has unnamed columns in the header row.")
+        df = read_method(file, skiprows=1)  # Skip the first line
+    else:
+        df = read_method(file)
+    return df
+
+def drop_rows(df, threshold, logger):
+    # Remove rows where most of the columns have missing data
+    rows_before = df.shape[0]
+    df = df.dropna(thresh=threshold)
+    rows_after = df.shape[0]
+
+    # Calculate and accumulate the number of dropped rows
+    dropped_rows = rows_before - rows_after
+    logger.info(f"Dropped {dropped_rows} of {rows_before} rows due to NA cols.")
+
+    return df, dropped_rows
+
+def process_files(data_dir, file_regex, threshold, logger):
+    dfs = []
+    total_dropped_rows = 0
+    for file in find_files(data_dir, file_regex):
+        logger.debug(f'file: {file}')
+        file = os.path.join(data_dir, file)
+        try:
+            df = read_file(file, logger)
+            if df is not None:
+                df, dropped_rows = drop_rows(df, threshold, logger)
+                total_dropped_rows += dropped_rows
+                dfs.append(df)
+        except Exception as e:
+            logger.error(f"Error reading {file}: {e}")
+
+    combined_df = pd.concat(dfs, ignore_index=True)
+
+    # Remove rows where the timestamp is not unique in the combined DataFrame
+    rows_before = combined_df.shape[0]
+    combined_df = combined_df.drop_duplicates(subset='timestamp', keep=False)
+    rows_after = combined_df.shape[0]
+
+    # Calculate and log the number of dropped rows
+    dropped_rows = rows_before - rows_after
+    total_dropped_rows += dropped_rows
+    logger.info(f"Dropped {dropped_rows} of {rows_before} rows from the combined DataFrame due to duplicate timestamps.")
+    logger.info(f"Total dropped rows: {total_dropped_rows}")
+
+    return combined_df
+
 def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
-    pass
+    logger.info(f"Processing phone data for {pid}")
+    try:
+        sessions = get_session_dates(pid, ses_file, logger=logger)
+    except Exception as e:
+        logger.exception(f"Can't get session dates: {e}")
+
+    # Process CALL LOGS
+    call_regex = f"{pid}_\d+-*\d*_call.*(\.csv|\.xlsx)$"
+    call_data_dir = os.path.join(input_dir, 'iMazing CALL LOGS')
+    threshold = int(0.7 * len(call_df.columns))  # Adjust as needed
+    call_df = process_files(call_data_dir, call_regex, threshold, logger)
+
+    # Process TXT data
+    txt_regex = f"{pid}_\d+-*\d*_texts.*(\.csv|\.xlsx)$"
+    txt_data_dir = os.path.join(input_dir, 'iMazing TXT LOGS')
+    txt_df = process_files(txt_data_dir, txt_regex, threshold, logger)
 
 def accel_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
     logger.info(f"Processing accelerometer data for {pid}")
@@ -255,26 +346,25 @@ def report_for_pid(c, pid: int=None, outdir=None, logger=None):
         raise ValueError("`pid` is None")
     # The session plots template is structured to provide visualizations of GPS data.
     # It's designed to integrate with the main report seamlessly.
-    ses_plots_template = Template("""
-## $ses
+    ses_plots_template = MyTemplate("""
+## @@ses
 
 ::: {.panel-tabset}
 
 ### GPS Trajectory
 
-```{python}
-ses = "$ses"
-traj = rf.get_traj(sub, ses)
-if traj is not None:
-    plot_map(traj)
+```{r}
+ses = "@@ses"
+d_traj <- get_data(sub, ses, type = 'gps')
+tryCatch(print(plot_traj(d_traj)), error = \(e) sprintf('Could not plot: %s', e))
 ```
 
 ### Accelerometer Histograms
 
-```{python}
-ses = "$ses"
-accel = get_accel(sub, ses)
-plot_accel_hists(accel, skip_cols=['date'], bins=5)
+```{r}
+ses = "@@ses"
+d_accel <- get_data(sub, ses, type = 'accel')
+tryCatch(print(plot_accel(d_accel)), error = \(e) sprintf('Could not plot: %s', e))
 ```
 
 :::
@@ -285,7 +375,7 @@ plot_accel_hists(accel, skip_cols=['date'], bins=5)
     
     # Load the main report template. This serves as a base structure where session data will be embedded.
     with open('report_template.qmd', 'r') as file:
-        template = Template(file.read())
+        template = MyTemplate(file.read())
 
     # Default output directory structure is designed for consistency and easy lookup.
     if outdir is None:
@@ -311,17 +401,9 @@ plot_accel_hists(accel, skip_cols=['date'], bins=5)
     
     # Conversion to HTML format is for easy viewing in web browsers.
     logger.debug("Rendering qmd to html")
-    logger.debug(f"Current conda env: {os.environ['CONDA_DEFAULT_ENV']}")
-    with c.prefix('. /ncf/mclaughlin/users/jflournoy/code/spack/share/spack/setup-env.sh'):
-        with c.prefix('spack load quarto-cli'):
-            logger.debug(f"Current conda env: {os.environ['CONDA_DEFAULT_ENV']}")
-            run_info = c.run(f"quarto check", echo=True, echo_stdin=True,
-                             env={'XDG_RUNTIME_DIR': '/n/holyscratch01/LABS/mclaughlin_lab/Users/jflournoy/'}) 
-            logger.debug(run_info)
-    with c.prefix('. /ncf/mclaughlin/users/jflournoy/code/spack/share/spack/setup-env.sh'):
-        with c.prefix('spack load quarto-cli'):
-            logger.debug(f"Current conda env: {os.environ['CONDA_DEFAULT_ENV']}")
-            run_info = c.run(f"quarto render {out_qmd} --execute-debug --to html", echo=True, echo_stdin=True,
+    with c.prefix('OVERLAY="$SCRATCH/LABS/mclaughlin_lab/Users/jflournoy/$(uuidgen).img"'):
+        with c.prefix('singularity overlay create --size 2512 "${OVERLAY}"'):
+            run_info = c.run(f"singularity exec -B /ncf --overlay ${{OVERLAY}} ~/data/containers/verse-cmdstan-cuda.simg quarto render {out_qmd} --execute-debug --to html", echo=True, echo_stdin=True,
                              env={'XDG_RUNTIME_DIR': '/n/holyscratch01/LABS/mclaughlin_lab/Users/jflournoy/'}) 
             logger.debug(run_info)
 
@@ -470,8 +552,22 @@ def accel(c, pid: int=None, allpid: bool=False, cred_file: str = '.credentials')
         try:
             accel_for_pid(pid, ses_file=c.ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=c.out_dir, logger=logger)
         except Exception as e:
-            logger.error(f"Problem computing gps trajectories: {e}")
-            
+            logger.error(f"Problem computing accelerometer data: {e}")
+
+@task
+def phone(c, pid: int=None, allpid: bool=False):
+    logger = setup_logging(log_file = c.log_file, log_level = c.log_level)
+    if not pid and not allpid:
+        raise ValueError("Must either provide a PID or specify `--allpid`")
+    if allpid:
+        sbatch_invoke_allpid(c, "phone", logger)
+    else:
+        input_dir = os.path.join(c.phone_data_fasse_dir)    
+        try:
+            phone_for_pid(pid, ses_file=c.ses_file, input_dir=input_dir, out_dir=c.out_dir, logger=logger)
+        except Exception as e:
+            logger.error(f"Problem processing raw phone data: {e}")
+
 @task
 def summarize_gps(c, pid: int=None, allpid: bool=False, cred_file: str = '.credentials'):
     """
@@ -571,6 +667,38 @@ def clean(c, dry_run=False):
             if not dry_run:
                 shutil.rmtree(dir_path)
                     
+
+@task
+def sync_phone_data(c, dry_run=False):
+    logger = setup_logging(log_file = c.log_file, log_level = c.log_level)
+    dry_run_string = ""
+    
+    #check rclone config
+    rclone_config_check = c.run('rclone config dump')
+    rclone_config_keys = json.loads(rclone_config_check.stdout).keys()
+    if 'sox3' not in rclone_config_keys:
+        logger.error(f"sox3 not in rclone config: {rclone_config_keys}")
+        raise ValueError("sox3 not in rclone config")
+    if dry_run:
+        dry_run_string = "--dry-run"
+    rclone_cmd = f"rclone sync sox3:{c.phone_data_sox3_dir} {c.phone_data_fasse_dir} -P {dry_run_string}"
+    rclone_out = c.run(rclone_cmd, echo=True)
+    logger.info(f"Finished running rclone")
+
+
+@task
+def summarize_phone_data(c, pid: int=None, allpid: bool=False, cred_file: str = '.credentials'):
+    #Not sure yet if this is needed or makes sense
+    # logger = setup_logging(log_file = c.log_file, log_level = c.log_level)
+    
+    # if allpid:
+    #     sbatch_invoke_allpid(c, "summarize-phone-data", logger)
+    # else:
+    #     summarize_for_pid(pid=pid, dtype='phone', csv_file=os.path.join('daily', f"{pid}_phone_daily.csv"), out_dir=c.out_dir, logger=logger)
+    #     logger.info(f"Done with {pid}")
+    pass
+        
+
 #--------------------------------------    
 
 # Ensuring a consistent runtime environment, regardless of where the script is invoked from.
@@ -578,7 +706,7 @@ dir_of_this_script = os.path.dirname(os.path.abspath(__file__))
 os.chdir(dir_of_this_script)
 
 # Task collections make it possible to group multiple related operations, simplifying the orchestration.
-ns = Collection(gps, make_report, summarize_gps, summarize_accel, build, accel, clean)
+ns = Collection(gps, make_report, summarize_gps, summarize_accel, build, accel, clean, sync_phone_data, phone)
 
 # Default configurations are set to ensure smooth operations even if specific settings aren't provided.
 ns.configure({'log_level': "INFO", 
@@ -589,3 +717,4 @@ ns.configure({'log_level': "INFO",
               'sbatch_header': """#!/bin/bash
 echo PLEASE DEFINE THIS IN invoke.yaml
 """})  
+
