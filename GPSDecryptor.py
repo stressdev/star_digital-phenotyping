@@ -65,17 +65,18 @@ class GPSDecryptor:
             # add ch to logger
             self.logger.addHandler(ch)
         self.logger = PrefixAdapter(self.logger, {'prefix': f"PID {self.pid}"})
-        gps_base_dir = os.path.join(input_dir, 'PROTECTED', 'STAR', str(self.pid))
+        self.gps_base_dir = os.path.join(input_dir, 'PROTECTED', 'STAR', str(self.pid), 'phone', 'raw')
         self.phone_base_dir = os.path.join(input_dir, 'GENERAL', 'STAR', str(self.pid), 'phone', 'raw')
         with open(cred_file, 'r') as f:
             self.passphrase = f.readline().strip()
         gps_dir_re = re.compile(r".*/gps$")
         accel_dir_re = re.compile(r".*/accelerometer$")
-        self.logger.info(f"Looking for GPS dir in {gps_base_dir}")
-        self.gps_dir = [x[0] for x in os.walk(gps_base_dir) if bool(gps_dir_re.match(x[0]))][0]
         self.logger.info(f"Looking for bewie id in {self.phone_base_dir}")
         self.bewie_id = os.listdir(self.phone_base_dir)[0]
+        if self.bewie_id != os.listdir(self.gps_base_dir)[0]:
+            raise ValueError('Bewie ID not the same for PROTECTED and GENERAL')
         self.accel_dir = os.path.join(self.phone_base_dir, self.bewie_id, 'accelerometer')
+        self.gps_dir = os.path.join(self.gps_base_dir, self.bewie_id, 'gps')
         self.logger.info(f"bewie id: {self.bewie_id}")
         self.gps_summary = None
         self.all_memory_dict = None
@@ -252,19 +253,20 @@ GPSDecryptor object:
         places_of_interest = None
         self.logger.info(f"Study dir is: {tmpdirname}")
         gps_stats_main(study_folder=tmpdirname, 
-                       output_folder=output_dir, 
-                       tz_str=tz_str, 
-                       frequency=frequency, 
-                       save_traj=save_traj, 
-                       places_of_interest=places_of_interest, 
-                       participant_ids = [f"{self.pid}"],
-                       all_memory_dict=all_memory_dict,
-                       all_bv_set=all_bv_set)
+                    output_folder=output_dir, 
+                    tz_str=tz_str, 
+                    frequency=frequency, 
+                    save_traj=save_traj, 
+                    places_of_interest=places_of_interest, 
+                    participant_ids = [f"{self.pid}"],
+                    all_memory_dict=all_memory_dict,
+                    all_bv_set=all_bv_set)
         self.logger.info('GPS stats generation completed.')
-        self.logger.info(f"Output dir: {output_dir}")
-        self.logger.info("Files: ")
         for file in os.listdir(output_dir):
+            self.logger.info(f"Output dir: {output_dir}")
+            self.logger.info("Files: ")
             self.logger.info(f"  {file}")
+        
 
     def process_gps(self, ses=0, start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
         '''
@@ -275,13 +277,19 @@ GPSDecryptor object:
             start_date (datetime, optional): Start date for processing. Defaults to far past.
             end_date (datetime, optional): End date for processing. Defaults to far future.
         '''
-        with tempfile.TemporaryDirectory() as tempdir:
-            self.logger.info("Collecting file paths...")
-            file_paths = self.get_file_list_for_dates(file_dir=self.gps_dir, start_date=start_date, end_date=end_date)
-            output_dir = os.path.join(tempdir, f"{self.pid}", 'gps')
-            self.decrypt(file_paths, output_dir)
-            self.logger.info(f"Processing data for {start_date} to {end_date}")
-            self.summarize_gps(tempdir, ses=ses, start_date=start_date, end_date=end_date)
+        formatted_ses = self.format_ses(ses)
+        formatted_pid = self.pid
+        processed_output_dir = os.path.join(self.pid_dir, f'ses-{start_date:%y%m%d}STAR{formatted_pid}{formatted_ses}')
+        if not os.path.exists(os.path.join(processed_output_dir, f"{self.pid}.csv")) or not os.path.exists(os.path.join(processed_output_dir, 'trajectory', f"{self.pid}.csv")): 
+            with tempfile.TemporaryDirectory() as tempdir:
+                output_dir = os.path.join(tempdir, f"{self.pid}", 'gps')
+                self.logger.info("Collecting file paths...")
+                file_paths = self.get_file_list_for_dates(file_dir=self.gps_dir, start_date=start_date, end_date=end_date)
+                self.decrypt(file_paths, output_dir)
+                self.logger.info(f"Processing data for {start_date} to {end_date}")
+                self.summarize_gps(tempdir, ses=ses, start_date=start_date, end_date=end_date)
+        else:
+            self.logger.info('Skipping, output already exists.')
     
     def summarize_accel(self, tmpdirname, ses:str, start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
         self.logger.info(f"Processing accelerometer data for {start_date} to {end_date}")
@@ -295,20 +303,31 @@ GPSDecryptor object:
         tz_str = "America/New_York"
         self.logger.info(f"Using time zone: {tz_str}")
         frequency = Frequency.DAILY
-        
+
         run(tmpdirname, output_dir, tz_str, frequency, start_date_str, end_date_str)
-        
+        self.logger.info('Accelerometer stats generation completed.')
+        for file in os.listdir(output_dir):
+            self.logger.info(f"Output dir: {output_dir}")
+            self.logger.info("Files: ")
+            self.logger.info(f"  {file}")
+
     def process_accel(self, ses="0", start_date=datetime(1900, 1, 1, 0, 0, 0), end_date=datetime(9900, 1, 1, 0, 0, 0)):
-        with tempfile.TemporaryDirectory() as tempdir:
-            self.logger.info("Collecting file paths...")
-            file_paths = self.get_file_list_for_dates(file_dir=self.accel_dir, 
-                                                      start_date=start_date, 
-                                                      end_date=end_date, 
-                                                      file_suffix=r'\.csv')
-            output_dir = os.path.join(tempdir, f"{self.pid}", 'accelerometer')
-            self.logger.info(f"Copying {len(file_paths)} files to {output_dir}")
-            self.copy_files(file_paths, output_dir)
-            self.logger.info(f"Processing data for {start_date} to {end_date}")
-            self.summarize_accel(tempdir, ses=ses, start_date=start_date, end_date=end_date)
+        formatted_ses = self.format_ses(ses)
+        formatted_pid = self.pid
+        processed_output_dir = output_dir = os.path.join(self.pid_dir, f'ses-{start_date:%y%m%d}STAR{formatted_pid}{formatted_ses}')
+        if not os.path.exists(os.path.join(processed_output_dir, 'daily', f"{self.pid}_gait_daily.csv")): 
+            with tempfile.TemporaryDirectory() as tempdir:
+                self.logger.info("Collecting file paths...")
+                file_paths = self.get_file_list_for_dates(file_dir=self.accel_dir, 
+                                                        start_date=start_date, 
+                                                        end_date=end_date, 
+                                                        file_suffix=r'\.csv')
+                output_dir = os.path.join(tempdir, f"{self.pid}", 'accelerometer')
+                self.logger.info(f"Copying {len(file_paths)} files to {output_dir}")
+                self.copy_files(file_paths, output_dir)
+                self.logger.info(f"Processing data for {start_date} to {end_date}")
+                self.summarize_accel(tempdir, ses=ses, start_date=start_date, end_date=end_date)
+        else:
+            self.logger.info('Skipping, output already exists.')
             
         

@@ -1,6 +1,5 @@
 ---
 title: "Trajectory Analysis"
-jupyter: "star_diph"
 format:
     html:
         code-fold: true
@@ -9,12 +8,144 @@ format:
         embed-resources: true
 ---
 
-# Participant ID: **$sub**
+# Participant ID: **@@sub**
 
-```{python}
-import reportfunctions as rf
-
-sub = "$sub"
-
+```{r, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 ```
+
+```{r}
+.libPaths("/ncf/mclaughlin/users/jflournoy/R/x86_64-pc-linux-gnu-library/verse-4.3.1")
+library(ggplot2)
+library(GGally)
+library(data.table)
+sub = '@@sub'
+study_digital_dir <- '/ncf/mclaughlin_lab_tier1/STAR/8_digital'
+boston_gps <- c(lat = 42.35843, long = -71.05977)
+haversine <- Vectorize(function(lon1, lat1, lon2 = boston_gps['long'], lat2 = boston_gps['lat']) {
+  # Convert degrees to radians
+  lon1 <- lon1 * pi / 180
+  lat1 <- lat1 * pi / 180
+  lon2 <- lon2 * pi / 180
+  lat2 <- lat2 * pi / 180
+
+  # Radius of the Earth in kilometers
+  R <- 6371
+
+  # Haversine formula
+  dlon <- lon2 - lon1
+  dlat <- lat2 - lat1
+  a <- sin(dlat / 2)^2 + cos(lat1) * cos(lat2) * sin(dlon / 2)^2
+  c <- 2 * asin(sqrt(a))
+  distance <- R * c
+
+  return(distance)  # Distance in kilometers
+}, vectorize.args = c('lon1', 'lat1'))
+
+clean_data <- function(x, type){
+  f <- get(paste0('clean_data_', type))
+  return(f(x))
+}
+clean_data_gps <- function(x){
+  x <- x[y0 > -360 & y0 < 720]
+  return(x)
+}
+clean_data_accel <- function(x){
+  return(x)
+}
+get_data <- function(sub, ses, type = 'gps'){
+  require(data.table)
+  shortsub <- gsub('sub-(\\d{4})', '\\1', sub)
+  if(type == 'gps'){
+    data_path <- file.path(study_digital_dir, sub, ses, 'trajectory', sprintf('%s.csv', shortsub))  
+  } else if(type == 'accel'){
+    data_path <- file.path(study_digital_dir, sub, ses, 'daily', sprintf('%s_gait_daily.csv', shortsub))
+  }
+  d <- NA
+  tryCatch({
+    d <- fread(data_path)
+    d <- clean_data(d, type = type)
+  },
+  error = \(e) {
+    print(sprintf('Problem loading trajectory file from path %s: %s', data_path, e))
+  })
+  return(d)
+}
+image_file_name <- function(plot_name, sub, ses, img_dir = 'img'){
+  img_path <- file.path(study_digital_dir, sub, ses, img_dir, paste0(plot_name, '.png'))
+  return(img_path)
+}
+plot_accel <- function(x, save = TRUE){
+  require(GGally)
+  #x <- d_accel
+  x_l <- melt(x, id.vars = 'date')
+  pairs <- time <- NA
+  tryCatch({
+    pairs <- GGally::ggpairs(x[, c('walking_time', 'steps', 'cadence')], 
+                             diag = list(continuous = wrap(ggally_barDiag, bins = 15))) + 
+      theme_minimal()
+    time <- ggplot(x_l, aes(x = date, y = value)) + 
+      geom_line() + 
+      facet_wrap(ncol = 1, ~ variable, scales = 'free') + 
+      theme_minimal()
+  }, 
+  error = \(e) {
+    print(sprintf('Problem plotting: %s', e))
+  })
+  outlist <- list(accel_pairs = pairs, accel_over_time = time)
+  
+  if(save){
+    img_fns <- lapply(names(outlist), image_file_name, sub = sub, ses = ses) 
+    tryCatch(Map(ggsave, filename = img_fns, plot = outlist, width = 5, height = 4, units = 'in'),
+             error = \(e) print(sprintf('Problem saving images: %s', e)))
+  }
+  
+  return(outlist)
+}
+plot_traj <- function(x, save = TRUE){
+  #x <- d_traj
+  require(viridisLite)
+  traj <- duration <- NA
+  tryCatch({
+    x[, dur := 0]
+    x[status == 2, dur := t1 - t0]
+    x[, obs_fac := factor(obs, levels = c(1, 0), labels = c('observed', 'Bewie imputed'))]
+    x[, distance_0 := haversine(x0, y0)]
+  },
+  error = \(e) {print(sprintf('Could not compute extra statistics for plot: %s', e))})
+  
+  tryCatch({
+    traj <- ggplot() + 
+      geom_segment(data = x[status == 1],
+                   aes(x = y0, xend = y1, y = x0, yend = x1, linetype = obs_fac)) + #flights 
+      geom_point(data = x[status == 2], aes(y = x0, x = y0, size = dur), alpha = .25) + # pauses
+      theme_minimal() + 
+      labs(x = 'Longitude', y = 'Latitude', linetype = 'Data status', size = 'Duration', alpha = 'Duration')
+    count_log_labels <- c(1, 10, 100, 1000, 10000)
+    
+    duration <- ggplot(x[status==2], aes(x = distance_0, y = dur)) +
+      geom_hex(aes(color = log(..count..), fill = log(..count..))) + 
+      scale_fill_viridis_c(option = 'inferno', begin = 0, aesthetics = c('color', 'fill'),
+                           breaks = log(count_log_labels), 
+                           labels = count_log_labels,
+                           name = 'N Obs') + 
+      scale_y_continuous(breaks = c(10*60, 60*60, 4*60*60, 24*60*60), labels = c('10 min', '1 hour', '4 hours', '24 hours')) + 
+      theme_minimal() + 
+      labs(x = 'Approximate distance from research site (arbitrary)', y = 'Pause duration')
+    
+  }, 
+  error = \(e) {
+    print(sprintf('Problem plotting: %s', e))
+  })
+  outlist <- list(gps_traj = traj, gps_duration = duration)
+  if(save){
+    img_fns <- lapply(names(outlist), image_file_name, sub = sub, ses = ses) 
+    tryCatch(Map(ggsave, filename = img_fns, plot = outlist, width = 5, height = 4, units = 'in'),
+             error = \(e) print(sprintf('Problem saving images: %s', e)))
+  }
+  return(outlist)
+}
+```
+
+
 
