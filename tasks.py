@@ -196,7 +196,12 @@ def process_files(data_dir, file_regex, threshold, logger):
 
     # Remove rows where the timestamp is not unique in the combined DataFrame
     rows_before = combined_df.shape[0]
-    combined_df = combined_df.drop_duplicates(subset='timestamp', keep=False)
+    # Create a mask for the duplicated rows
+    duplicated_mask = combined_df.duplicated(keep=False)
+
+    # Select the duplicated rows
+    duplicated_rows = combined_df[duplicated_mask]
+    combined_df = combined_df.drop_duplicates(keep=False)
     rows_after = combined_df.shape[0]
 
     # Calculate and log the number of dropped rows
@@ -205,7 +210,7 @@ def process_files(data_dir, file_regex, threshold, logger):
     logger.info(f"Dropped {dropped_rows} of {rows_before} rows from the combined DataFrame due to duplicate timestamps.")
     logger.info(f"Total dropped rows: {total_dropped_rows}")
 
-    return combined_df
+    return combined_df, duplicated_rows
 
 def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
     logger.info(f"Processing phone data for {pid}")
@@ -217,13 +222,19 @@ def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_d
     # Process CALL LOGS
     call_regex = f"{pid}_\d+-*\d*_call.*(\.csv|\.xlsx)$"
     call_data_dir = os.path.join(input_dir, 'iMazing CALL LOGS')
-    threshold = int(0.7 * len(call_df.columns))  # Adjust as needed
-    call_df = process_files(call_data_dir, call_regex, threshold, logger)
+    threshold = 3  # We require at least 3 columns to consider the row legitimate
+    call_df, call_dupes_df = process_files(call_data_dir, call_regex, threshold, logger)
+    call_dupes_df_out_fn = os.path.join(out_dir, f"sub-{pid}", f"sub-{pid}_call_duplicates.csv")
+    call_dupes_df.to_csv(call_dupes_df_out_fn, index=False)
 
     # Process TXT data
     txt_regex = f"{pid}_\d+-*\d*_texts.*(\.csv|\.xlsx)$"
-    txt_data_dir = os.path.join(input_dir, 'iMazing TXT LOGS')
-    txt_df = process_files(txt_data_dir, txt_regex, threshold, logger)
+    txt_data_dir = os.path.join(input_dir, 'iMazing TEXT LOGS')
+    txt_df, txt_dupes_df = process_files(txt_data_dir, txt_regex, threshold, logger)
+    txt_dupes_df_out_fn = os.path.join(out_dir, f"sub-{pid}", f"sub-{pid}_txt_duplicates.csv")
+    txt_dupes_df.to_csv(txt_dupes_df_out_fn, index=False)
+
+    #Need to split these up now by each date in sessions
 
 def accel_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
     logger.info(f"Processing accelerometer data for {pid}")
