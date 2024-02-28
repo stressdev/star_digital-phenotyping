@@ -10,6 +10,15 @@ from string import Template
 import multiprocessing
 import json
 
+# When data acquisition falls between sessions, how do we assign which session it belongs to? In these scripts
+# I assign the data collected between session N and N+1 to session N. That is, if the data were collected between
+# on or after Session 1 (2022-01-01) and before Session 2 (2022-02-01), it would be assigned to session 1. 
+# If the data were collected on or after Session 2 (2022-02-01) and before Session 3 (2022-03-01), it would be 
+# assigned to session 2. It will be up to the user to make adjustments to the data if they feel a variable collected
+# at Session N should be examine with respect to the data collected before or after that session, knowing that the digital
+# phenotyping data collected *after* session N will be assigned to that session.
+
+
 class MyTemplate(Template):
     delimiter = '@@'
 
@@ -84,11 +93,12 @@ def get_session_dates(pid: int, ses_file, logger=None):
     sessions_l['value'] = pd.to_datetime(sessions_l['value'], format='mixed', errors='coerce')
     sessions_l.rename(columns = {'value': 'start', 'fevd': 'pid'}, inplace=True)
     sessions_l['end'] = sessions_l['start'].shift(-1)
+    sessions_l['sub_session_lag1'] = sessions_l['sub_session'].shift(-1)
     sessions_l['ndays'] = sessions_l['end'] - sessions_l['start']
     
     logger.debug(f"Long sessions shape after transforms: {sessions_l.shape}")
     
-    return( sessions_l[['pid', 'start', 'end', 'session', 'sub_session', 'ndays']].dropna(subset='ndays') )
+    return( sessions_l[['pid', 'start', 'end', 'session', 'sub_session', 'ndays', 'sub_session_lag1']].dropna(subset='ndays') )
 
 def process_session(pid, ses_sub_session, ses_start, ses_end, method_name, cred_file, input_dir, out_dir, logger):
     logger.debug(f"Working on {method_name} for {pid} between {ses_start:%Y-%m-%d} to {ses_end:%Y-%m-%d}")
@@ -212,6 +222,28 @@ def process_files(data_dir, file_regex, threshold, logger):
 
     return combined_df, duplicated_rows
 
+def session_tag_phone_logs(phone_df, sessions, logger):
+    #Find first and last session
+    
+    sub_session_first = sessions[sessions['start'] == min(sessions['start'])].iloc[0].sub_session
+    sub_session_last = sessions[sessions['start'] == max(sessions['start'])].iloc[0].sub_session
+    for index, row in sessions.iterrows():
+        # For the first session, we assign anything before the second session to the first session.
+        if row.sub_session == sub_session_first:
+            within_session_index = (phone_df['timestamp'] < row.end.timestamp())    
+        # For the last session, we assign anthing after the last session to the last session.
+        elif row.sub_session == sub_session_last:
+            within_session_index = (phone_df['timestamp'] >= row.start.timestamp())
+        else:
+            within_session_index = (phone_df['timestamp'] >= row.start.timestamp()) & (phone_df['timestamp'] < row.end.timestamp())
+        # Use the index that marks which phone data belong to the session with the session and sub_session number
+        phone_df.loc[within_session_index, 'session'] = row.session
+        phone_df.loc[within_session_index, 'sub_session'] = row.sub_session
+    if phone_df[phone_df.sub_session.isna()].shape[0] > 0:
+        logger.warning('Some rows not assinged session number')
+        logger.warning(f"{phone_df[phone_df.sub_session.isna()]}")
+    return(phone_df.sort_values(by='timestamp'))
+    
 def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
     logger.info(f"Processing phone data for {pid}")
     try:
@@ -233,6 +265,15 @@ def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_d
     txt_df, txt_dupes_df = process_files(txt_data_dir, txt_regex, threshold, logger)
     txt_dupes_df_out_fn = os.path.join(out_dir, f"sub-{pid}", f"sub-{pid}_txt_duplicates.csv")
     txt_dupes_df.to_csv(txt_dupes_df_out_fn, index=False)
+
+    call_df.rename(columns={'call type' : 'type'}, inplace=True)
+    txt_df.rename(columns={'sent vs received' : 'type'}, inplace=True)
+
+    phone_logs = [call_df, txt_df]
+
+    for log in phone_logs:
+        log['timestamp'] = log['timestamp'].astype(float)
+        log = session_tag_phone_logs(log, sessions, logger)
 
     #Need to split these up now by each date in sessions
 
