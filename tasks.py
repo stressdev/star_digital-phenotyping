@@ -243,7 +243,57 @@ def session_tag_phone_logs(phone_df, sessions, logger):
         logger.warning('Some rows not assinged session number')
         logger.warning(f"{phone_df[phone_df.sub_session.isna()]}")
     return(phone_df.sort_values(by='timestamp'))
-    
+
+def summarize_phone_logs(log_df, groupby_cols, lengthcol, logger):
+    for col in groupby_cols:
+        if col not in log_df.columns:
+            error_text = f"Column '{col}' not found in phone log dataframe."
+            logger.error(error_text)
+            raise ValueError(error_text)
+    log_sum_df = log_df.groupby(groupby_cols).agg(
+        N=pd.NamedAgg(column='timestamp', aggfunc='count'),
+        N_length_zero=pd.NamedAgg(column=lengthcol, aggfunc=lambda x: sum(~(x > 0))), 
+        N_unique_phone_numbers=pd.NamedAgg(column='hashed phone number', aggfunc=lambda x: x.nunique()),
+        length_sum=pd.NamedAgg(column=lengthcol, aggfunc='sum')
+    ).reset_index()
+    return(log_sum_df)
+
+def get_phone_data(pid: int, data_type: str, input_dir: str, out_dir: str, logger=None):
+    if data_type not in ['call', 'texts']:
+        logger.error(f"data_type must be either 'call' or 'texts'. Got: {data_type}.")
+        raise ValueError("data_type must be either 'call' or 'texts'")
+    regex = f"{pid}_\d+-*\d*_{data_type}.*(\.csv|\.xlsx)$"
+    data_dir_name = 'iMazing CALL LOGS' if data_type == 'call' else 'iMazing TEXT LOGS'
+    data_dir = os.path.join(input_dir, data_dir_name)
+    threshold = 3  # We require at least 3 columns to consider the row legitimate
+    df, dupes_df = process_files(data_dir, regex, threshold, logger)
+    dupes_df_out_fn = os.path.join(out_dir, f"sub-{pid}", f"sub-{pid}_{data_type}_duplicates.csv")
+    dupes_df.to_csv(dupes_df_out_fn, index=False)
+    df.rename(columns={'call type' if data_type == 'call' else 'sent vs received': 'type'}, inplace=True)
+    return df
+
+def save_logs(pid: int, phone_logs: dict, sessions: pd.DataFrame, out_dir: str, logger=None):
+    if not set(phone_logs.keys()).issubset({'calls', 'txts'}):
+        error_msg = f"Phone log keys must be either 'call' or 'txts'. Got: {phone_logs.keys()}."
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    pid_dir = os.path.join(out_dir, f"sub-{pid}")
+    lengthcol = {'calls' : 'duration in seconds', 'txts' : 'message length'}
+    logger.info(f"Saving text and call logs into session directories and creating monthly summaries for sub-{pid}")
+    for key, log in phone_logs.items():
+        log['timestamp'] = log['timestamp'].astype(float)
+        log = session_tag_phone_logs(log, sessions, logger)
+        monthly_data_outfile_name = os.path.join(pid_dir, f"sub-{pid}_{key}_monthly.csv")
+        monthly_log = summarize_phone_logs(log, groupby_cols=['session', 'sub_session', 'type'], lengthcol=lengthcol[key], logger=logger)
+        monthly_log.to_csv(monthly_data_outfile_name, index=False)
+        grouped_log = log.groupby(['session', 'sub_session'])
+        for group_name, group_df in grouped_log:
+            ses_start_date = sessions[(sessions.session == group_name[0]) & (sessions.sub_session == group_name[1])].start.iloc[0]
+            formatted_ses = format_ses(group_name[1])
+            ses_output_dir = os.path.join(pid_dir, f'ses-{ses_start_date:%y%m%d}STAR{pid}{formatted_ses}')
+            ses_output_path = os.path.join(ses_output_dir, f"sub-{pid}_ses-{formatted_ses}_{key}.csv")
+            group_df.to_csv(ses_output_path, index=False)
+
 def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
     logger.info(f"Processing phone data for {pid}")
     try:
@@ -252,30 +302,14 @@ def phone_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_d
         logger.exception(f"Can't get session dates: {e}")
 
     # Process CALL LOGS
-    call_regex = f"{pid}_\d+-*\d*_call.*(\.csv|\.xlsx)$"
-    call_data_dir = os.path.join(input_dir, 'iMazing CALL LOGS')
-    threshold = 3  # We require at least 3 columns to consider the row legitimate
-    call_df, call_dupes_df = process_files(call_data_dir, call_regex, threshold, logger)
-    call_dupes_df_out_fn = os.path.join(out_dir, f"sub-{pid}", f"sub-{pid}_call_duplicates.csv")
-    call_dupes_df.to_csv(call_dupes_df_out_fn, index=False)
+    call_df = get_phone_data(pid, 'call', input_dir, out_dir, logger)
 
     # Process TXT data
-    txt_regex = f"{pid}_\d+-*\d*_texts.*(\.csv|\.xlsx)$"
-    txt_data_dir = os.path.join(input_dir, 'iMazing TEXT LOGS')
-    txt_df, txt_dupes_df = process_files(txt_data_dir, txt_regex, threshold, logger)
-    txt_dupes_df_out_fn = os.path.join(out_dir, f"sub-{pid}", f"sub-{pid}_txt_duplicates.csv")
-    txt_dupes_df.to_csv(txt_dupes_df_out_fn, index=False)
+    txt_df = get_phone_data(pid, 'texts', input_dir, out_dir, logger)
 
-    call_df.rename(columns={'call type' : 'type'}, inplace=True)
-    txt_df.rename(columns={'sent vs received' : 'type'}, inplace=True)
+    phone_logs = {'calls': call_df, 'txts': txt_df}
 
-    phone_logs = [call_df, txt_df]
-
-    for log in phone_logs:
-        log['timestamp'] = log['timestamp'].astype(float)
-        log = session_tag_phone_logs(log, sessions, logger)
-
-    #Need to split these up now by each date in sessions
+    save_logs(pid, phone_logs, sessions, out_dir, logger)
 
 def accel_for_pid(pid: int, ses_file: str, cred_file=None, input_dir=None, out_dir=None, logger=None):
     logger.info(f"Processing accelerometer data for {pid}")
