@@ -198,6 +198,7 @@ def drop_rows(df, threshold, logger):
 def process_files(data_dir, file_regex, threshold, logger):
     dfs = []
     total_dropped_rows = 0
+    logger.debug(f"Looking for files in {data_dir} using {file_regex}")
     for file in find_files(data_dir, file_regex):
         logger.debug(f'file: {file}')
         file = os.path.join(data_dir, file)
@@ -545,6 +546,11 @@ def build_pid(c, pid: int, ses_file: str, cred_file=None, input_dir=None, out_di
     except Exception as e:
         logger.error(f"Error summarizing accelerometer for {pid}: {e}")
                           
+    try:
+        phone_for_pid(pid=pid, ses_file=ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=out_dir, logger=logger)
+    except Exception as e:
+        logger.error(f"Error processing phone data for {pid}: {e}")
+    
     try:
         report_for_pid(c, pid=pid, outdir=None, logger=logger)
     except Exception as e:
