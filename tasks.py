@@ -65,6 +65,14 @@ def setup_logging(log_file: str = None, log_level: str ='INFO'):
     
     return logger
 
+def format_ses(s):
+    # Extract numeric and optional letter parts
+    numeric_part = ''.join([ch for ch in s if ch.isdigit()])
+    letter_part = ''.join([ch for ch in s if ch.isalpha()])
+    # Format numeric part with two digits
+    formatted_numeric = f"{int(numeric_part):02d}"
+    return f"{formatted_numeric}{letter_part}"
+
 def get_session_dates(pid: int, ses_file, logger=None):
     """
     Returns session dates for a given participant ID.
