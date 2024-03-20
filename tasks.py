@@ -441,29 +441,6 @@ def report_for_pid(c, pid: int=None, outdir=None, logger=None):
         raise ValueError("`pid` is None")
     # The session plots template is structured to provide visualizations of GPS data.
     # It's designed to integrate with the main report seamlessly.
-    ses_plots_template = MyTemplate("""
-## @@ses
-
-::: {.panel-tabset}
-
-### GPS Trajectory
-
-```{r}
-ses = "@@ses"
-d_traj <- get_data(sub, ses, type = 'gps')
-tryCatch(print(plot_traj(d_traj)), error = \(e) sprintf('Could not plot: %s', e))
-```
-
-### Accelerometer Histograms
-
-```{r}
-ses = "@@ses"
-d_accel <- get_data(sub, ses, type = 'accel')
-tryCatch(print(plot_accel(d_accel)), error = \(e) sprintf('Could not plot: %s', e))
-```
-
-:::
-""")
 
     logger.info(f"Creating report for {pid}")
     logger.debug("Openning template")
@@ -476,18 +453,12 @@ tryCatch(print(plot_accel(d_accel)), error = \(e) sprintf('Could not plot: %s', 
     if outdir is None:
         outdir = os.path.join(c.out_dir, f"sub-{pid}")
     
-    # Standardized naming convention for report files ensures uniformity.
     qmd_file = f"report_sub-{pid}.qmd"
     out_qmd = os.path.join(outdir, qmd_file)
     
     # Embed the participant ID into the main template.
     logger.debug("Formatting template")
     qmd = template.substitute(sub=f"sub-{pid}")
-    
-    # Fetching all session directories to report on any data that has been processed.
-    ses_dirs = [d for d in os.listdir(f'/ncf/mclaughlin_lab_tier1/STAR/8_digital/sub-{pid}/') if re.match('ses-.*', d)]
-    for ses_dir in ses_dirs:
-        qmd += ses_plots_template.substitute(ses = ses_dir)
     
     # Once the report structure is ready, it's saved as a .qmd file, which can later be converted to other formats.
     logger.debug("Writing qmd")
@@ -498,7 +469,7 @@ tryCatch(print(plot_accel(d_accel)), error = \(e) sprintf('Could not plot: %s', 
     logger.debug("Rendering qmd to html")
     with c.prefix('OVERLAY="$SCRATCH/LABS/mclaughlin_lab/Users/jflournoy/$(uuidgen).img"'):
         with c.prefix('singularity overlay create --size 2512 "${OVERLAY}"'):
-            run_info = c.run(f"singularity exec -B /ncf --overlay ${{OVERLAY}} ~/data/containers/verse-cmdstan-cuda.simg quarto render {out_qmd} --execute-debug --to html", echo=True, echo_stdin=True,
+            run_info = c.run(f"singularity exec -B /ncf --overlay ${{OVERLAY}} {c.R_singularity_image} quarto render {out_qmd} --execute-debug --to html", echo=True, echo_stdin=True,
                              env={'XDG_RUNTIME_DIR': '/n/holyscratch01/LABS/mclaughlin_lab/Users/jflournoy/'}) 
             logger.debug(run_info)
 

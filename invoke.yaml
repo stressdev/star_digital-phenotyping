@@ -14,3 +14,4 @@ sbatch_header: |
     #SBATCH -o logs/%A_%a.log
 phone_data_sox3_dir: "sdlab/SDLab/STUDIES/STAR_R01/DATA/PHONE\\ DATA"
 phone_data_fasse_dir: "/ncf/mclaughlin_lab_tier1/STAR/8_digital/raw_data/PHONE_DATA/"
+R_singularity_image: "/ncf/mclaughlin_lab_tier1/users/jflournoy/fasseood/dev/rstudio-app/verse-cmdstan-2.34.1.simg"

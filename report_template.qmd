@@ -1,9 +1,10 @@
 ---
-title: "Trajectory Analysis"
+title: "Report for @@sub"
 format:
     html:
         code-fold: true
         code-summary: "Show the code"
+        code-tools: true
         toc: true
         embed-resources: true
 ---
@@ -15,13 +16,17 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 ```
 
 ```{r}
-.libPaths("/ncf/mclaughlin/users/jflournoy/R/x86_64-pc-linux-gnu-library/verse-4.3.1")
+#We will want to wrap this all up in a package that can be installed?
+sub = '@@sub'
+ses_dirs <- dir(pattern = 'ses*')
+.libPaths("/ncf/mclaughlin/users/jflournoy/R/x86_64-pc-linux-gnu-library/verse-4.3.2")
 library(ggplot2)
 library(GGally)
 library(data.table)
-sub = '@@sub'
 study_digital_dir <- '/ncf/mclaughlin_lab_tier1/STAR/8_digital'
+study_script_dir <- '/ncf/mclaughlin_lab_tier1/STAR/2_scripts/Digital_Phenotyping_Pipeline'
 boston_gps <- c(lat = 42.35843, long = -71.05977)
+
 haversine <- Vectorize(function(lon1, lat1, lon2 = boston_gps['long'], lat2 = boston_gps['lat']) {
   # Convert degrees to radians
   lon1 <- lon1 * pi / 180
@@ -53,28 +58,48 @@ clean_data_gps <- function(x){
 clean_data_accel <- function(x){
   return(x)
 }
+clean_data_calls <- function(x){
+  x[, phone_id := .GRP, by = 'hashed phone number']
+  return(x)
+}
+clean_data_txts <- function(x){
+  x[, phone_id := .GRP, by = 'hashed phone number']
+  return(x)
+}
 get_data <- function(sub, ses, type = 'gps'){
   require(data.table)
   shortsub <- gsub('sub-(\\d{4})', '\\1', sub)
+  shortses <- gsub(sprintf('ses-\\d+STAR%s(\\d+[AB]*)', shortsub), '\\1', ses)
   if(type == 'gps'){
     data_path <- file.path(study_digital_dir, sub, ses, 'trajectory', sprintf('%s.csv', shortsub))  
   } else if(type == 'accel'){
     data_path <- file.path(study_digital_dir, sub, ses, 'daily', sprintf('%s_gait_daily.csv', shortsub))
+  } else if(type == 'calls'){
+    data_path <- file.path(study_digital_dir, sub, ses, sprintf('%s_ses-%s_calls.csv', sub, shortses))
+  } else if(type == 'txts'){
+    data_path <- file.path(study_digital_dir, sub, ses, sprintf('%s_ses-%s_txts.csv', sub, shortses))
+  } else {
+    error(sprintf('Data type %s not implemented yet', type))
   }
-  d <- NA
-  tryCatch({
-    d <- fread(data_path)
-    d <- clean_data(d, type = type)
-  },
-  error = \(e) {
-    print(sprintf('Problem loading trajectory file from path %s: %s', data_path, e))
-  })
+  if (!file.exists(data_path)){
+    d <- data.frame()
+  } else {
+    tryCatch({
+      d <- fread(data_path)
+      d <- clean_data(d, type = type)
+    },
+    error = \(e) {
+      print(sprintf('Something went wrong reading the data: %s', e))
+    })
+  }
   return(d)
 }
+  
 image_file_name <- function(plot_name, sub, ses, img_dir = 'img'){
   img_path <- file.path(study_digital_dir, sub, ses, img_dir, paste0(plot_name, '.png'))
   return(img_path)
 }
+
 plot_accel <- function(x, save = TRUE){
   require(GGally)
   #x <- d_accel
@@ -102,6 +127,7 @@ plot_accel <- function(x, save = TRUE){
   
   return(outlist)
 }
+
 plot_traj <- function(x, save = TRUE){
   #x <- d_traj
   require(viridisLite)
@@ -145,7 +171,80 @@ plot_traj <- function(x, save = TRUE){
   }
   return(outlist)
 }
+
+plot_txts <- function(x){
+  require(fpc)
+  dbscan_clusters <- function(timestamps){
+    clusters <- dbscan(timestamps, eps = 60*60, MinPts = 1)
+    return(clusters$cluster)
+  }
+  
+  x[, cluster := dbscan_clusters(timestamp), by = 'phone_id']
+  x_sum <- x[, .(median_date = as.POSIXct(median(timestamp), origin = "1970-01-01", tz = "America/New_York"),
+                           min_date = as.POSIXct(min(timestamp), origin = "1970-01-01", tz = "America/New_York"),
+                           max_date = as.POSIXct(max(timestamp), origin = "1970-01-01", tz = "America/New_York"),
+                           N_txts = .N,
+                           total_length = sum(`message length`)),
+                       by = c('phone_id', 'cluster', 'type')]
+  p <- ggplot(x_sum, aes(x = `median_date`, y = `total_length`)) + 
+  geom_rect(aes(xmin = min_date,
+                   xmax = max_date,
+                   ymin = 0,
+                   ymax = 10),
+           fill = 'black') + 
+  geom_line(alpha = .5, aes(group = phone_id, color = type)) +
+  geom_point(aes(size = N_txts, group = phone_id, color = type), alpha = .8) +
+  labs(x = 'Date/time',
+       y = 'Total length of all messages',
+       size = 'Number of messages',
+       color = '') +
+  facet_wrap(~ phone_id, ncol = 2) + 
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank(), 
+          panel.spacing = unit(0, "lines"),
+          panel.border = element_rect(fill = NA, color = '#aaaaaa', linewidth = 1))
+  
+  return(p)
+}
+
+plot_calls <- function(x){
+  p <- ggplot(x, aes(as.POSIXct(timestamp, origin = "1970-01-01", tz = "America/New_York"), 
+                           y = `duration in seconds`)) + 
+    geom_line(aes(color = type)) +
+    geom_point(aes(color = type), size = .75) +
+    scale_y_continuous(breaks = round(quantile(x$`duration in seconds`, probs = c(.5, .99), names = FALSE))) + 
+    facet_grid(phone_id ~ type) +
+    theme_minimal() + 
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major.x = element_blank(), 
+          panel.spacing = unit(0, "lines"),
+          panel.border = element_rect(fill = NA, color = '#aaaaaa', linewidth = 1)) + 
+    labs(x = 'Date/time',
+         y = 'Call duration (s)',
+         color = '')
+  return(p)
+}
+
+check_dt <- function(x) {
+  q <- rlang::enquo(x)
+  r <- FALSE
+  if (exists(rlang::quo_get_expr(q))){
+    x <- rlang::eval_tidy(q)
+    if (inherits(x, 'data.table') && length(x) > 0) {
+      r <- TRUE
+    }
+  } 
+  return(r)
+}
 ```
 
 
+```{r, echo=FALSE, results='asis'}
+qmd_template_path <- file.path(study_script_dir, 'session_report_template.qmd')
+
+src <- lapply(ses_dirs, \(ses) knitr::knit_expand(file = qmd_template_path))
+res <- knitr::knit_child(text = unlist(src), quiet = TRUE)
+
+cat(res, sep = '\n')
+```
 

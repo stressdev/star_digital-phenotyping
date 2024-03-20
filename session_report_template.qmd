@@ -1,0 +1,78 @@
+
+## {{ses}}
+
+::: {.panel-tabset}
+
+### GPS Trajectory
+
+```{r}
+ses = '{{ses}}'
+```
+
+```{r}
+d_traj <- get_data(sub, ses, type = 'gps')
+if (check_dt(d_traj)){
+  tryCatch(print(plot_traj(d_traj)), error = \(e) sprintf('Could not plot: %s', e))  
+} else {
+  cat('No data file')
+}
+```
+
+### Accelerometer Histograms
+
+```{r}
+d_accel <- get_data(sub, ses, type = 'accel')
+if (check_dt(d_accel)){
+  tryCatch(print(plot_accel(d_accel)), error = \(e) sprintf('Could not plot: %s', e))
+} else {
+  cat('No data file')
+}
+```
+
+### Calls Data
+
+```{r}
+fig_height <- 4
+d_calls <- get_data(sub = sub, ses = ses, type = 'calls')
+if (check_dt(d_calls)){
+  try({
+    N_hpn <- length(unique(d_calls[, phone_id]))
+    fig_height <- ceiling(N_hpn/2)
+  })
+} 
+```
+
+```{r}
+#| fig-height: !expr fig_height
+
+if (check_dt(d_calls)){
+  tryCatch(print(plot_calls(d_calls)), error = \(e) sprintf('Could not plot: %s', e))
+} else {
+  cat('No data file')
+}
+```
+
+### Texts Data
+
+```{r}
+fig_height <- 4
+d_txts <- get_data(sub, ses, type = 'txts')
+
+if (check_dt(d_txts)){
+  try({
+    N_hpn <- length(unique(d_txts[, phone_id]))
+    fig_height <- ceiling(N_hpn/2)
+  })
+}
+```
+
+```{r}
+#| fig-height: !expr fig_height
+if (check_dt(d_txts)){
+  tryCatch(print(plot_txts(d_txts)), error = \(e) sprintf('Could not plot: %s', e))
+} else {
+  cat('No data file')
+}
+```
+
+:::
