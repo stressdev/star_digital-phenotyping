@@ -518,7 +518,8 @@ def build_pid(c, pid: int, ses_file: str, cred_file=None, input_dir=None, out_di
         logger.error(f"Error summarizing accelerometer for {pid}: {e}")
                           
     try:
-        phone_for_pid(pid=pid, ses_file=ses_file, cred_file=cred_file, input_dir=input_dir, out_dir=out_dir, logger=logger)
+        phone_input_dir = c.phone_data_fasse_dir
+        phone_for_pid(pid=pid, ses_file=ses_file, cred_file=cred_file, input_dir=phone_input_dir, out_dir=out_dir, logger=logger)
     except Exception as e:
         logger.error(f"Error processing phone data for {pid}: {e}")
     
