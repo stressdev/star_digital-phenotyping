@@ -19,6 +19,7 @@ The command, `invoke -l` below will list the tasks. To get help for a task, e.g.
 module load python/3.10.9-fasrc01
 mamba activate star_diph
 invoke -l
+invoke -h gps
 ```
 
 ## Other necessary info
